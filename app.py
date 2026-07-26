@@ -1,12 +1,11 @@
 import os
 import io
-import json
 from datetime import datetime
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import qrcode
-from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean, func
 from sqlalchemy.orm import sessionmaker, declarative_base, relationship
 from fpdf import FPDF
 
@@ -251,8 +250,9 @@ def generate_devis_pdf(db, devis_id):
     
     pdf.set_font('Arial', '', 9)
     for item in items:
-        pdf.cell(widths[0], 8, f"{item.produit_type} {item.couleur} ({item.serie_profil})", 1, 0)
-        pdf.cell(widths[1], 8, item.ouverture, 1, 0)
+        designation = f"{item.produit_type} {item.couleur} ({item.serie_profil})"
+        pdf.cell(widths[0], 8, designation[:35], 1, 0)
+        pdf.cell(widths[1], 8, item.ouverture[:15], 1, 0)
         pdf.cell(widths[2], 8, f"{int(item.largeur)}x{int(item.hauteur)}", 1, 0, 'C')
         pdf.cell(widths[3], 8, str(item.quantite), 1, 0, 'C')
         pdf.cell(widths[4], 8, f"{item.prix_unitaire:,.2f} DA", 1, 0, 'R')
@@ -275,23 +275,20 @@ def generate_devis_pdf(db, devis_id):
     pdf.cell(50, 10, "TOTAL TTC:", 1, 0, 'R', True)
     pdf.cell(30, 10, f"{devis.total_ttc:,.2f} DA", 1, 1, 'R', True)
     
-    # QR Code
+    # QR Code généré en mémoire (RAM)
     qr = qrcode.QRCode(version=1, box_size=3, border=1)
     qr.add_data(f"Devis: {devis.numero}|Client: {client.nom}|Total: {devis.total_ttc}")
     qr.make(fit=True)
     img = qr.make_image(fill='black', back_color='white')
+    
     img_byte_arr = io.BytesIO()
     img.save(img_byte_arr, format='PNG')
     img_byte_arr.seek(0)
     
-    # Pour FPDF2, il faut sauvegarder l'image temporairement
-    temp_qr_path = "assets/temp_qr.png"
-    img.save(temp_qr_path)
-    pdf.image(temp_qr_path, x=10, y=pdf.get_y()+10, w=25)
-    if os.path.exists(temp_qr_path):
-        os.remove(temp_qr_path)
+    pdf.image(img_byte_arr, x=10, y=pdf.get_y()+10, w=25)
         
-    return pdf.output(dest='S')
+    # Retourne les bytes pour Streamlit
+    return bytes(pdf.output(dest='S'))
 
 # ==========================================
 # 6. INTERFACE STREAMLIT
@@ -322,10 +319,13 @@ def main():
 def show_dashboard(db):
     st.header("🏠 Tableau de bord")
     col1, col2, col3, col4 = st.columns(4)
+    
+    total_ca = db.query(func.sum(Devis.total_ttc)).filter(Devis.statut == 'Accepté').scalar() or 0
+    
     col1.metric("Total Clients", db.query(Client).count())
     col2.metric("Total Devis", db.query(Devis).count())
     col3.metric("Devis Acceptés", db.query(Devis).filter_by(statut="Accepté").count())
-    col4.metric("CA Total (DA)", f"{db.query(Devis).filter_by(statut='Accepté').with_entities(func.sum(Devis.total_ttc)).scalar() or 0:,.0f}")
+    col4.metric("CA Total (DA)", f"{total_ca:,.0f}")
     
     st.markdown("---")
     st.subheader("Évolution des Devis")
@@ -366,6 +366,7 @@ def show_clients(db):
                     db.add(new_client)
                     db.commit()
                     st.success("Client ajouté avec succès !")
+                    st.rerun()
                 else:
                     st.error("Le nom et le téléphone sont obligatoires.")
     
@@ -388,25 +389,28 @@ def show_devis(db):
 
     clients = db.query(Client).all()
     if not clients:
-        st.warning("Veuillez d'abord créer un client.")
+        st.warning("Veuillez d'abord créer un client avant de faire un devis.")
         return
 
-    with st.form("devis_form"):
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            client_opts = {f"{c.prenom} {c.nom} ({c.telephone1})": c.id for c in clients}
-            client_sel = st.selectbox("Client", list(client_opts.keys()))
-            commercial = st.text_input("Commercial", "DJEFF")
-        with c2:
-            marge = st.number_input("Marge (%)", 0, 100, 30)
-            remise = st.number_input("Remise (%)", 0.0, 100.0, 0.0)
-        with c3:
-            tva = st.checkbox("Appliquer TVA (19%)")
-            statut = st.selectbox("Statut", ["Brouillon", "Envoyé", "Accepté", "Refusé"])
+    # 1. Informations du Devis (Hors formulaire pour garder les valeurs en mémoire)
+    st.subheader("Informations du Devis")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        client_opts = {f"{c.prenom} {c.nom} ({c.telephone1})": c.id for c in clients}
+        client_sel = st.selectbox("Client", list(client_opts.keys()))
+        commercial = st.text_input("Commercial", "DJEFF")
+    with c2:
+        marge = st.number_input("Marge (%)", 0, 100, 30)
+        remise = st.number_input("Remise (%)", 0.0, 100.0, 0.0)
+    with c3:
+        tva = st.checkbox("Appliquer TVA (19%)")
+        statut = st.selectbox("Statut", ["Brouillon", "Envoyé", "Accepté", "Refusé"])
 
-        st.markdown("---")
-        st.subheader("Ajouter un produit")
-        
+    st.markdown("---")
+    
+    # 2. Formulaire d'ajout d'article
+    st.subheader("Ajouter un produit au panier")
+    with st.form("item_form"):
         types = [t.nom for t in db.query(ProduitType).all()]
         ouv = [o.nom for o in db.query(Ouverture).all()]
         series = [s.serie for s in db.query(TarifAluminium).all()]
@@ -427,7 +431,8 @@ def show_devis(db):
             p_vitr = st.selectbox("Vitrage", vitrages)
         with pc4:
             p_coul = st.selectbox("Couleur", couleurs)
-            add_btn = st.form_submit_button("➕ Calculer et Ajouter")
+            
+        add_btn = st.form_submit_button("➕ Calculer et Ajouter")
             
         if add_btn:
             calc = calculer_prix_item(db, p_larg, p_haut, p_qte, p_mat, p_serie, p_vitr, p_coul, marge)
@@ -440,56 +445,63 @@ def show_devis(db):
             st.session_state.cart.append(item)
             st.success(f"Produit ajouté au panier (Total: {calc['total_ligne']} DA)")
 
-    # Affichage du panier
+    # 3. Affichage du panier et validation
     if st.session_state.cart:
         st.subheader("Articles du Devis")
         df_cart = pd.DataFrame(st.session_state.cart)
-        st.dataframe(df_cart[['type', 'ouv', 'larg', 'haut', 'qte', 'mat', 'serie', 'vitr', 'coul', 'pu', 'total']])
+        st.dataframe(df_cart[['type', 'ouv', 'larg', 'haut', 'qte', 'mat', 'serie', 'vitr', 'coul', 'pu', 'total']], use_container_width=True)
         
-        total_ht = sum([i['total'] for i in st.session_state.cart])
-        total_remise = total_ht * (remise / 100)
-        total_ht_net = total_ht - total_remise
-        total_tva = total_ht_net * 0.19 if tva else 0
-        total_ttc = total_ht_net + total_tva
-        
-        st.markdown(f"**Sous-total HT :** {total_ht:,.2f} DA")
-        st.markdown(f"**Remise ({remise}%) :** -{total_remise:,.2f} DA")
-        st.markdown(f"**Total HT Net :** {total_ht_net:,.2f} DA")
-        if tva: st.markdown(f"**TVA (19%) :** {total_tva:,.2f} DA")
-        st.markdown(f"### TOTAL TTC : {total_ttc:,.2f} DA")
-        
-        if st.button("💾 Valider et Enregistrer le Devis"):
-            year = datetime.now().year
-            prefix = f"DEV-{year}-"
-            last = db.query(Devis).filter(Devis.numero.like(f"{prefix}%")).order_by(Devis.id.desc()).first()
-            seq = int(last.numero[-4:]) + 1 if last else 1
-            num_devis = f"{prefix}{seq:04d}"
+        col_total1, col_total2 = st.columns([3, 1])
+        with col_total2:
+            if st.button("🗑️ Vider le panier"):
+                st.session_state.cart = []
+                st.rerun()
+                
+            total_ht = sum([i['total'] for i in st.session_state.cart])
+            total_remise = total_ht * (remise / 100)
+            total_ht_net = total_ht - total_remise
+            total_tva = total_ht_net * 0.19 if tva else 0
+            total_ttc = total_ht_net + total_tva
             
-            new_devis = Devis(
-                numero=num_devis, client_id=client_opts[client_sel], commercial=commercial,
-                statut=statut, marge=marge, remise=remise, tva=tva, 
-                total_ht=total_ht_net, total_ttc=total_ttc
-            )
-            db.add(new_devis)
-            db.commit()
+            st.markdown(f"**Sous-total HT :** {total_ht:,.2f} DA")
+            st.markdown(f"**Remise ({remise}%) :** -{total_remise:,.2f} DA")
+            st.markdown(f"**Total HT Net :** {total_ht_net:,.2f} DA")
+            if tva: st.markdown(f"**TVA (19%) :** {total_tva:,.2f} DA")
+            st.markdown(f"### TOTAL TTC : {total_ttc:,.2f} DA")
             
-            for it in st.session_state.cart:
-                db_item = DevisItem(
-                    devis_id=new_devis.id, produit_type=it['type'], ouverture=it['ouv'],
-                    largeur=it['larg'], hauteur=it['haut'], quantite=it['qte'],
-                    materiau=it['mat'], serie_profil=it['serie'], type_vitrage=it['vitr'],
-                    couleur=it['coul'], prix_unitaire=it['pu'], total_ligne=it['total'],
-                    surface=it['surf'], perimeter=it['peri']
+            if st.button("💾 Valider et Enregistrer le Devis", type="primary"):
+                year = datetime.now().year
+                prefix = f"DEV-{year}-"
+                last = db.query(Devis).filter(Devis.numero.like(f"{prefix}%")).order_by(Devis.id.desc()).first()
+                seq = int(last.numero[-4:]) + 1 if last else 1
+                num_devis = f"{prefix}{seq:04d}"
+                
+                new_devis = Devis(
+                    numero=num_devis, client_id=client_opts[client_sel], commercial=commercial,
+                    statut=statut, marge=marge, remise=remise, tva=tva, 
+                    total_ht=total_ht_net, total_ttc=total_ttc
                 )
-                db.add(db_item)
-            db.commit()
-            st.session_state.cart = []
-            st.success(f"Devis {num_devis} enregistré avec succès !")
-            st.balloons()
+                db.add(new_devis)
+                db.commit()
+                
+                for it in st.session_state.cart:
+                    db_item = DevisItem(
+                        devis_id=new_devis.id, produit_type=it['type'], ouverture=it['ouv'],
+                        largeur=it['larg'], hauteur=it['haut'], quantite=it['qte'],
+                        materiau=it['mat'], serie_profil=it['serie'], type_vitrage=it['vitr'],
+                        couleur=it['coul'], prix_unitaire=it['pu'], total_ligne=it['total'],
+                        surface=it['surf'], perimeter=it['peri']
+                    )
+                    db.add(db_item)
+                db.commit()
+                st.session_state.cart = []
+                st.success(f"Devis {num_devis} enregistré avec succès !")
+                st.balloons()
+                st.rerun()
 
     st.markdown("---")
     st.subheader("📋 Devis Enregistrés")
-    devis_list = db.query(Devis).all()
+    devis_list = db.query(Devis).order_by(Devis.id.desc()).all()
     if devis_list:
         for d in devis_list:
             with st.expander(f"{d.numero} - {d.client.nom} {d.client.prenom} - {d.total_ttc:,.2f} DA [{d.statut}]"):
@@ -497,7 +509,7 @@ def show_devis(db):
                 if st.button("📄 Générer PDF", key=f"pdf_{d.id}"):
                     pdf_bytes = generate_devis_pdf(db, d.id)
                     st.download_button(
-                        label="Télécharger le PDF",
+                        label="⬇️ Télécharger le PDF",
                         data=pdf_bytes,
                         file_name=f"{d.numero}.pdf",
                         mime="application/pdf"
@@ -514,6 +526,7 @@ def show_tarifs(db):
             alu.prix_ml = new_price
             db.commit()
             st.success(f"Prix {alu.serie} mis à jour !")
+            st.rerun()
 
     st.subheader("Tarifs Vitrage (Prix au m²)")
     vits = db.query(TarifVitrage).all()
@@ -523,6 +536,7 @@ def show_tarifs(db):
             vit.prix_m2 = new_price
             db.commit()
             st.success(f"Prix {vit.type} mis à jour !")
+            st.rerun()
 
 def show_parametres(db):
     st.header("⚙️ Paramètres de l'entreprise")
@@ -554,5 +568,4 @@ def show_parametres(db):
                 st.success("Paramètres enregistrés !")
 
 if __name__ == "__main__":
-    from sqlalchemy import func # Import ici pour éviter les soucis de portée globale
     main()
