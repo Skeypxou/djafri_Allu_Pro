@@ -759,99 +759,34 @@ def show_devis():
                 st.write(f"**Date:** {d['date']} | **Commercial:** {d['commercial']}")
                 st.dataframe(pd.DataFrame(d["items"]), use_container_width=True)
                 
-                col_pdf, col_fac = st.columns(2)
-                if col_pdf.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
-                    pdf_bytes = generate_pdf(d, "Devis")
-                    col_pdf.download_button("⬇️ Télécharger", pdf_bytes, f"{d['numero']}.pdf", "application/pdf")
+                # NOUVEAU : Mise à jour du statut automatique via on_change
+                def update_statut_callback():
+                    new_statut = st.session_state[f"stat_dev_{d['id']}"]
+                    update_devis_statut(d["id"], new_statut)
+
+                st.selectbox("Modifier le statut", ["Brouillon", "Envoyé", "Accepté", "Refusé", "Facturé"],
+                            index=["Brouillon", "Envoyé", "Accepté", "Refusé", "Facturé"].index(d["statut"]),
+                            key=f"stat_dev_{d['id']}",
+                            on_change=update_statut_callback)
+
+                st.markdown("") # Espacement
                 
-                if d["statut"] == "Accepté":
-                    if col_fac.button("➡️ Convertir en Facture", key=f"fac_{d['id']}"):
+                # NOUVEAU : Bouton de conversion simplifié et direct
+                if d["statut"] != "Facturé":
+                    if st.button("➡️ Convertir en Facture", key=f"fac_{d['id']}", type="primary"):
                         num_fac = create_facture_from_devis(d["id"])
-                        st.success(f"Facture {num_fac} créée avec succès !")
+                        st.success(f"Facture {num_fac} créée avec succès ! Allez dans le module Factures.")
+                        st.balloons()
                         st.rerun()
+                else:
+                    st.info("✅ Ce devis a déjà été converti en facture.")
+                        
+                # Bouton PDF
+                if st.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
+                    pdf_bytes = generate_pdf(d, "Devis")
+                    st.download_button("⬇️ Télécharger le PDF", pdf_bytes, f"{d['numero']}.pdf", "application/pdf")
     else:
         st.info("Aucun devis enregistré.")
-
-def show_factures():
-    st.header("🧾 Factures & Paiements")
-    factures = get_all_factures()
-    clients = get_all_clients()
-    
-    if not factures:
-        st.info("Aucune facture émise. Convertissez un devis accepté en facture.")
-        return
-        
-    for f in reversed(factures):
-        client = next((c for c in clients if c["id"] == f["client_id"]), {"nom": "Inconnu", "prenom": ""})
-        paiements = get_paiements_for_facture(f["id"])
-        total_paye = sum([p["montant"] for p in paiements])
-        reste = f["total_ttc"] - total_paye
-        
-        with st.expander(f"{f['numero']} - {client['prenom']} {client['nom']} - {f['total_ttc']:,.2f} DA [{f['statut']}]"):
-            st.write(f"**Date:** {f['date']} | **Total Payé:** {total_paye:,.2f} DA | **Reste à payer:** {reste:,.2f} DA")
-            
-            col_pdf, col_pay, col_of = st.columns(3)
-            if col_pdf.button("📄 Générer PDF Facture", key=f"pdf_fac_{f['id']}"):
-                pdf_bytes = generate_pdf(f, "Facture")
-                col_pdf.download_button("⬇️ Télécharger", pdf_bytes, f"{f['numero']}.pdf", "application/pdf")
-            
-            if col_of.button("🛠️ Envoyer en Atelier (OF)", key=f"of_{f['id']}"):
-                num_of = create_of_from_facture(f["id"])
-                st.success(f"Ordre de Fabrication {num_of} créé !")
-                st.rerun()
-            
-            with col_pay.form(f"pay_form_{f['id']}"):
-                st.write("**Enregistrer un paiement:**")
-                montant = st.number_input("Montant (DA)", 0.0, float(reste) if reste > 0 else 0.0, 0.0, key=f"mnt_{f['id']}")
-                methode = st.selectbox("Méthode", ["Espèces", "Virement", "Chèque", "CCP"], key=f"meth_{f['id']}")
-                if st.form_submit_button("Valider le paiement"):
-                    create_paiement({
-                        "facture_id": f["id"],
-                        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                        "montant": montant,
-                        "methode": methode
-                    })
-                    st.success("Paiement enregistré !")
-                    st.rerun()
-
-def show_atelier():
-    st.header("🛠️ Gestion de l'Atelier (Ordres de Fabrication)")
-    ofs = get_all_ofs()
-    clients = get_all_clients()
-    
-    if not ofs:
-        st.info("Aucun ordre de fabrication. Convertissez une facture en OF.")
-        return
-        
-    for o in reversed(ofs):
-        client = next((c for c in clients if c["id"] == o["client_id"]), {"nom": "Inconnu", "prenom": ""})
-        
-        if o["statut"] == "Terminé":
-            icon = "✅"
-        elif o["statut"] == "En production":
-            icon = "⏳"
-        else:
-            icon = "⏸️"
-            
-        with st.expander(f"{icon} {o['numero']} - {client['prenom']} {client['nom']} [{o['statut']}]"):
-            col_info, col_statut = st.columns([3, 1])
-            with col_info:
-                st.write(f"**Date de création:** {o['date_creation']}")
-                st.write("**Liste des pièces à fabriquer :**")
-                df_items = pd.DataFrame(o["items"])
-                df_coupe = df_items[['produit_type', 'ouverture', 'couleur', 'largeur', 'hauteur', 'quantite']].copy()
-                df_coupe.columns = ['Type', 'Ouverture', 'Couleur', 'Largeur (mm)', 'Hauteur (mm)', 'Qté']
-                st.table(df_coupe)
-                
-            with col_statut:
-                new_statut = st.selectbox("Statut de l'OF", ["En attente", "En production", "Terminé"], 
-                                          index=["En attente", "En production", "Terminé"].index(o["statut"]),
-                                          key=f"statut_of_{o['id']}")
-                if st.button("💾 Mettre à jour le statut", key=f"upd_of_{o['id']}"):
-                    update_of_statut(o["id"], new_statut)
-                    st.success(f"Statut de l'OF {o['numero']} mis à jour !")
-                    st.rerun()
-
 def show_stock():
     st.header("📦 Gestion du Stock & Inventaire")
     
