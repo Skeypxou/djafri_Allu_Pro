@@ -252,27 +252,20 @@ def show_devis():
                 st.write(f"**Date:** {d['date']} | **Commercial:** {d['commercial']}")
                 st.dataframe(pd.DataFrame(d["items"]), use_container_width=True)
                 
-                # NOUVEAU : Mise à jour du statut du Devis
-                col_statut, col_action = st.columns([1, 2])
-                with col_statut:
-                    new_statut = st.selectbox("Modifier le statut", ["Brouillon", "Envoyé", "Accepté", "Refusé", "Facturé"],
-                                              index=["Brouillon", "Envoyé", "Accepté", "Refusé", "Facturé"].index(d["statut"]),
-                                              key=f"stat_dev_{d['id']}")
-                    if st.button("🔄 Valider le statut", key=f"upd_dev_{d['id']}"):
-                        update_devis_statut(d["id"], new_statut)
-                        st.success("Statut du devis mis à jour !")
-                        st.rerun()
-
-                with col_action:
-                    if d["statut"] == "Accepté":
-                        if st.button("➡️ Convertir en Facture", key=f"fac_{d['id']}", type="primary"):
-                            num_fac = create_facture_from_devis(d["id"])
+                st.markdown("") # Espacement
+                
+                # NOUVEAU : Bouton de conversion direct sans condition de statut compliquée
+                if d["statut"] != "Facturé":
+                    if st.button("➡️ Convertir en Facture", key=f"fac_{d['id']}", type="primary"):
+                        num_fac = create_facture_from_devis(d["id"])
+                        if num_fac:
                             st.success(f"Facture {num_fac} créée avec succès ! Allez dans le module Factures.")
+                            st.balloons()
                             st.rerun()
-                    elif d["statut"] == "Facturé":
-                        st.info("✅ Ce devis a déjà été converti en facture.")
-                    else:
-                        st.warning("Le devis doit être 'Accepté' pour être converti en facture.")
+                        else:
+                            st.error("Erreur lors de la création de la facture.")
+                else:
+                    st.info("✅ Ce devis a déjà été converti en facture.")
                         
                 # Bouton PDF
                 if st.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
@@ -283,30 +276,36 @@ def show_devis():
 
 # --- Facture Service ---
 def create_facture_from_devis(devis_id):
-    devis_list = JSONDB.read("devis")
-    devis = next((d for d in devis_list if d["id"] == devis_id), None)
-    if not devis: return None
+    try:
+        devis_list = JSONDB.read("devis")
+        devis = next((d for d in devis_list if d["id"] == devis_id), None)
+        if not devis: 
+            return None
+            
+        factures = JSONDB.read("factures")
+        year = datetime.now().year
+        prefix = f"FAC-{year}-"
+        seq = len([f for f in factures if f["numero"].startswith(prefix)]) + 1
+        num_facture = f"{prefix}{seq:04d}"
         
-    factures = JSONDB.read("factures")
-    year = datetime.now().year
-    prefix = f"FAC-{year}-"
-    seq = len([f for f in factures if f["numero"].startswith(prefix)]) + 1
-    num_facture = f"{prefix}{seq:04d}"
-    
-    new_facture = {
-        "id": JSONDB.get_next_id("factures"),
-        "numero": num_facture,
-        "devis_id": devis_id,
-        "client_id": devis["client_id"],
-        "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "total_ttc": devis["total_ttc"],
-        "statut": "Impayé",
-        "items": devis["items"]
-    }
-    factures.append(new_facture)
-    JSONDB.write("factures", factures)
-    update_devis_statut(devis_id, "Facturé")
-    return num_facture
+        new_facture = {
+            "id": JSONDB.get_next_id("factures"),
+            "numero": num_facture,
+            "devis_id": devis_id,
+            "client_id": devis["client_id"],
+            "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "total_ttc": devis["total_ttc"],
+            "statut": "Impayé",
+            "items": devis["items"]
+        }
+        factures.append(new_facture)
+        JSONDB.write("factures", factures)
+        
+        update_devis_statut(devis_id, "Facturé")
+        return num_facture
+    except Exception as e:
+        st.error(f"Erreur technique création facture: {e}")
+        return None
 
 def get_all_factures():
     return JSONDB.read("factures")
