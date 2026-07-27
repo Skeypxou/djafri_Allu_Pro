@@ -28,6 +28,7 @@ DB_FILES = {
     "factures": os.path.join(DB_DIR, "factures.json"),
     "paiements": os.path.join(DB_DIR, "paiements.json"),
     "atelier": os.path.join(DB_DIR, "atelier.json"),
+    "stock": os.path.join(DB_DIR, "stock.json"),
     "tarifs": os.path.join(DB_DIR, "tarifs.json"),
     "parametres": os.path.join(DB_DIR, "parametres.json"),
     "counters": os.path.join(DB_DIR, "counters.json")
@@ -77,7 +78,7 @@ def init_db():
             "nif": "000916123456789", "nis": "098765432109876", "tva_taux": 19.0
         })
 
-    for db_name in ["clients", "devis", "factures", "paiements", "atelier"]:
+    for db_name in ["clients", "devis", "factures", "paiements", "atelier", "stock"]:
         if not os.path.exists(DB_FILES[db_name]):
             JSONDB.write(db_name, [])
 
@@ -101,7 +102,7 @@ def init_db():
         })
 
     if not os.path.exists(DB_FILES["counters"]):
-        JSONDB.write("counters", {"clients": 0, "devis": 0, "factures": 0, "paiements": 0, "atelier": 0})
+        JSONDB.write("counters", {"clients": 0, "devis": 0, "factures": 0, "paiements": 0, "atelier": 0, "stock": 0})
 
 # ==========================================
 # 3. SERVICES MÉTIER (CRUD)
@@ -252,6 +253,41 @@ def update_of_statut(of_id, statut):
             return True
     return False
 
+# --- Stock Service ---
+def create_stock_item(data):
+    stock = JSONDB.read("stock")
+    data["id"] = JSONDB.get_next_id("stock")
+    stock.append(data)
+    JSONDB.write("stock", stock)
+
+def get_all_stock():
+    return JSONDB.read("stock")
+
+def update_stock_item(item_id, updated_data):
+    stock = JSONDB.read("stock")
+    for s in stock:
+        if s["id"] == item_id:
+            s.update(updated_data)
+            JSONDB.write("stock", stock)
+            return True
+    return False
+
+def delete_stock_item(item_id):
+    stock = JSONDB.read("stock")
+    stock = [s for s in stock if s["id"] != item_id]
+    JSONDB.write("stock", stock)
+
+def adjust_stock_quantity(item_id, amount):
+    """Permet d'ajouter (positif) ou retirer (négatif) de la quantité"""
+    stock = JSONDB.read("stock")
+    for s in stock:
+        if s["id"] == item_id:
+            s["quantite"] += amount
+            if s["quantite"] < 0: s["quantite"] = 0
+            JSONDB.write("stock", stock)
+            return True
+    return False
+
 # ==========================================
 # 4. MOTEUR DE CALCUL & PDF
 # ==========================================
@@ -377,19 +413,22 @@ def show_dashboard():
     factures = get_all_factures()
     paiements = JSONDB.read("paiements")
     ofs = get_all_ofs()
+    stock = get_all_stock()
     
     total_ca = sum([d["total_ttc"] for d in devis_list if d["statut"] in ["Accepté", "Facturé"]])
     total_paye = sum([p["montant"] for p in paiements])
     impayes = sum([f["total_ttc"] for f in factures if f["statut"] != "Payé"]) - total_paye
     ofs_en_cours = len([o for o in ofs if o["statut"] in ["En attente", "En production"]])
+    alertes_stock = len([s for s in stock if s["quantite"] <= s["seuil_alerte"]])
     
-    col1, col2, col3, col4, col5, col6 = st.columns(6)
+    col1, col2, col3, col4, col5, col6, col7 = st.columns(7)
     col1.metric("Clients", len(clients))
     col2.metric("Devis", len(devis_list))
     col3.metric("Factures", len(factures))
     col4.metric("CA Validé", f"{total_ca:,.0f} DA")
     col5.metric("Impayés", f"{impayes:,.0f} DA")
     col6.metric("OFs en cours", ofs_en_cours)
+    col7.metric("Alertes Stock", alertes_stock)
     
     st.markdown("---")
     st.subheader("Évolution des Devis")
@@ -671,7 +710,6 @@ def show_atelier():
     for o in reversed(ofs):
         client = next((c for c in clients if c["id"] == o["client_id"]), {"nom": "Inconnu", "prenom": ""})
         
-        # Couleurs selon le statut
         if o["statut"] == "Terminé":
             icon = "✅"
         elif o["statut"] == "En production":
@@ -684,8 +722,6 @@ def show_atelier():
             with col_info:
                 st.write(f"**Date de création:** {o['date_creation']}")
                 st.write("**Liste des pièces à fabriquer :**")
-                
-                # Préparation du tableau de coupe
                 df_items = pd.DataFrame(o["items"])
                 df_coupe = df_items[['produit_type', 'ouverture', 'couleur', 'largeur', 'hauteur', 'quantite']].copy()
                 df_coupe.columns = ['Type', 'Ouverture', 'Couleur', 'Largeur (mm)', 'Hauteur (mm)', 'Qté']
@@ -699,6 +735,80 @@ def show_atelier():
                     update_of_statut(o["id"], new_statut)
                     st.success(f"Statut de l'OF {o['numero']} mis à jour !")
                     st.rerun()
+
+def show_stock():
+    st.header("📦 Gestion du Stock & Inventaire")
+    
+    with st.expander("➕ Ajouter un article en stock"):
+        with st.form("stock_form"):
+            c1, c2, c3, c4 = st.columns(4)
+            with c1:
+                s_designation = st.text_input("Désignation* (ex: Profilé Série 40 Blanc)")
+            with c2:
+                s_type = st.selectbox("Type d'article", ["Profilé", "Vitrage", "Accessoire", "Quincaillerie"])
+            with c3:
+                s_unite = st.selectbox("Unité", ["Barre", "m²", "Pièce", "Kg"])
+            with c4:
+                s_qte = st.number_input("Quantité initiale", 0.0, 100000.0, 0.0)
+                
+            s_seuil = st.number_input("Seuil d'alerte", 0.0, 100000.0, 5.0)
+            
+            if st.form_submit_button("Ajouter au stock"):
+                if s_designation:
+                    create_stock_item({
+                        "designation": s_designation,
+                        "type": s_type,
+                        "unite": s_unite,
+                        "quantite": s_qte,
+                        "seuil_alerte": s_seuil
+                    })
+                    st.success("Article ajouté au stock !")
+                    st.rerun()
+                else:
+                    st.error("La désignation est obligatoire.")
+                    
+    st.markdown("---")
+    st.subheader(" Inventaire Actuel")
+    stock = get_all_stock()
+    
+    if stock:
+        for s in stock:
+            alerte = "🔴" if s["quantite"] <= s["seuil_alerte"] else "🟢"
+            with st.expander(f"{alerte} {s['designation']} - {s['quantite']} {s['unite']} (Alerte: {s['seuil_alerte']})"):
+                with st.form(f"edit_stock_{s['id']}"):
+                    c1, c2, c3 = st.columns(3)
+                    with c1:
+                        e_designation = st.text_input("Désignation", s['designation'], key=f"des_{s['id']}")
+                        e_type = st.selectbox("Type", ["Profilé", "Vitrage", "Accessoire", "Quincaillerie"], 
+                                              index=["Profilé", "Vitrage", "Accessoire", "Quincaillerie"].index(s['type']), key=f"typ_{s['id']}")
+                    with c2:
+                        e_unite = st.selectbox("Unité", ["Barre", "m²", "Pièce", "Kg"],
+                                               index=["Barre", "m²", "Pièce", "Kg"].index(s['unite']), key=f"uni_{s['id']}")
+                        e_seuil = st.number_input("Seuil d'alerte", 0.0, 100000.0, float(s['seuil_alerte']), key=f"seu_{s['id']}")
+                    with c3:
+                        st.write("**Ajustement rapide**")
+                        adj_qte = st.number_input("Entrée/Sortie (+/-)", -1000.0, 1000.0, 0.0, key=f"adj_{s['id']}")
+                        
+                    col_btn1, col_btn2, col_btn3 = st.columns([1, 1, 3])
+                    if col_btn1.form_submit_button("🗑️ Supprimer"):
+                        delete_stock_item(s['id'])
+                        st.rerun()
+                    if col_btn2.form_submit_button("💾 MAJ Infos"):
+                        update_stock_item(s['id'], {
+                            "designation": e_designation,
+                            "type": e_type,
+                            "unite": e_unite,
+                            "seuil_alerte": e_seuil
+                        })
+                        st.success("Informations mises à jour !")
+                        st.rerun()
+                    if col_btn3.form_submit_button("⚡ Appliquer Ajustement"):
+                        if adj_qte != 0.0:
+                            adjust_stock_quantity(s['id'], adj_qte)
+                            st.success(f"Stock ajusté de {adj_qte} {s['unite']} !")
+                            st.rerun()
+    else:
+        st.info("Aucun article en stock pour le moment.")
 
 def show_parametres():
     st.header("⚙️ Paramètres de l'entreprise")
@@ -739,6 +849,7 @@ def main():
         "📄 Devis", 
         "🧾 Factures", 
         "🛠️ Atelier",
+        "📦 Stock",
         "💰 Tarifs", 
         "⚙️ Paramètres"
     ])
@@ -753,6 +864,8 @@ def main():
         show_factures()
     elif menu == "🛠️ Atelier":
         show_atelier()
+    elif menu == "📦 Stock":
+        show_stock()
     elif menu == "💰 Tarifs":
         show_tarifs()
     elif menu == "⚙️ Paramètres":
