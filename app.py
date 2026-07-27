@@ -146,24 +146,140 @@ def get_tarifs():
 def update_tarifs(data):
     JSONDB.write("tarifs", data)
 
-# --- Devis Service ---
-def create_devis(data):
-    devis_list = JSONDB.read("devis")
-    data["id"] = JSONDB.get_next_id("devis")
-    devis_list.append(data)
-    JSONDB.write("devis", devis_list)
+def show_devis():
+    st.header("📄 Création de Devis")
+    
+    if 'cart' not in st.session_state:
+        st.session_state.cart = []
 
-def get_all_devis():
-    return JSONDB.read("devis")
+    clients = get_all_clients()
+    if not clients:
+        st.warning("Veuillez d'abord créer un client avant de faire un devis.")
+        return
 
-def update_devis_statut(devis_id, statut):
-    devis_list = JSONDB.read("devis")
-    for d in devis_list:
-        if d["id"] == devis_id:
-            d["statut"] = statut
-            JSONDB.write("devis", devis_list)
-            return True
-    return False
+    st.subheader("Informations du Devis")
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        client_opts = {f"{c['prenom']} {c['nom']} ({c['telephone1']})": c["id"] for c in clients}
+        client_sel = st.selectbox("Client", list(client_opts.keys()))
+        commercial = st.text_input("Commercial", "DJEFF")
+    with c2:
+        marge = st.number_input("Marge (%)", 0, 100, 30)
+        remise = st.number_input("Remise (%)", 0.0, 100.0, 0.0)
+    with c3:
+        tva = st.checkbox("Appliquer TVA (19%)")
+        statut = st.selectbox("Statut", ["Brouillon", "Envoyé", "Accepté", "Refusé"])
+
+    st.markdown("---")
+    tarifs = get_tarifs()
+    st.subheader("Ajouter un produit au panier")
+    with st.form("item_form"):
+        pc1, pc2, pc3, pc4 = st.columns(4)
+        with pc1:
+            p_type = st.selectbox("Type", tarifs["produit_types"])
+            p_ouv = st.selectbox("Ouverture", tarifs["ouvertures"])
+        with pc2:
+            p_larg = st.number_input("Largeur (mm)", 100, 5000, 1200)
+            p_haut = st.number_input("Hauteur (mm)", 100, 5000, 1000)
+            p_qte = st.number_input("Quantité", 1, 100, 1)
+        with pc3:
+            p_mat = st.selectbox("Matériau", ["Aluminium", "PVC"])
+            p_serie = st.selectbox("Série", [a["serie"] for a in tarifs["aluminium"]])
+            p_vitr = st.selectbox("Vitrage", [v["type"] for v in tarifs["vitrage"]])
+        with pc4:
+            p_coul = st.selectbox("Couleur", [c["nom"] for c in tarifs["couleurs"]])
+            
+        if st.form_submit_button("➕ Calculer et Ajouter"):
+            calc = calculer_prix_item(p_larg, p_haut, p_qte, p_mat, p_serie, p_vitr, p_coul, marge)
+            st.session_state.cart.append({
+                "produit_type": p_type, "ouverture": p_ouv, "largeur": p_larg, "hauteur": p_haut, 
+                "quantite": p_qte, "materiau": p_mat, "serie_profil": p_serie, "type_vitrage": p_vitr, 
+                "couleur": p_coul, "prix_unitaire": calc['prix_unitaire'], "total_ligne": calc['total_ligne'],
+                "surface": calc['surface'], "perimeter": calc['perimeter']
+            })
+            st.success(f"Produit ajouté (Total: {calc['total_ligne']} DA)")
+            st.rerun()
+
+    if st.session_state.cart:
+        st.subheader("Articles du Devis")
+        df_cart = pd.DataFrame(st.session_state.cart)
+        st.dataframe(df_cart[['produit_type', 'ouverture', 'largeur', 'hauteur', 'quantite', 'materiau', 'serie_profil', 'type_vitrage', 'couleur', 'prix_unitaire', 'total_ligne']], use_container_width=True)
+        
+        col_total1, col_total2 = st.columns([3, 1])
+        with col_total2:
+            if st.button("🗑️ Vider le panier"):
+                st.session_state.cart = []
+                st.rerun()
+                
+            total_ht = sum([i['total_ligne'] for i in st.session_state.cart])
+            total_remise = total_ht * (remise / 100)
+            total_ht_net = total_ht - total_remise
+            total_tva = total_ht_net * 0.19 if tva else 0
+            total_ttc = total_ht_net + total_tva
+            
+            st.markdown(f"**Sous-total HT :** {total_ht:,.2f} DA")
+            st.markdown(f"**Remise ({remise}%) :** -{total_remise:,.2f} DA")
+            st.markdown(f"**Total HT Net :** {total_ht_net:,.2f} DA")
+            if tva: st.markdown(f"**TVA (19%) :** {total_tva:,.2f} DA")
+            st.markdown(f"### TOTAL TTC : {total_ttc:,.2f} DA")
+            
+            if st.button("💾 Valider et Enregistrer le Devis", type="primary"):
+                year = datetime.now().year
+                prefix = f"DEV-{year}-"
+                existing_devis = get_all_devis()
+                last = [d for d in existing_devis if d["numero"].startswith(prefix)]
+                seq = len(last) + 1
+                num_devis = f"{prefix}{seq:04d}"
+                
+                create_devis({
+                    "numero": num_devis, "date": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "client_id": client_opts[client_sel], "commercial": commercial, "statut": statut,
+                    "marge": marge, "remise": remise, "tva": tva, "total_ht": total_ht_net, 
+                    "total_ttc": total_ttc, "items": st.session_state.cart
+                })
+                st.session_state.cart = []
+                st.success(f"Devis {num_devis} enregistré avec succès !")
+                st.balloons()
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("📋 Devis Enregistrés")
+    devis_list = get_all_devis()
+    if devis_list:
+        for d in reversed(devis_list):
+            client = next((c for c in clients if c["id"] == d["client_id"]), {"nom": "Inconnu", "prenom": ""})
+            with st.expander(f"{d['numero']} - {client['prenom']} {client['nom']} - {d['total_ttc']:,.2f} DA [{d['statut']}]"):
+                st.write(f"**Date:** {d['date']} | **Commercial:** {d['commercial']}")
+                st.dataframe(pd.DataFrame(d["items"]), use_container_width=True)
+                
+                # NOUVEAU : Mise à jour du statut du Devis
+                col_statut, col_action = st.columns([1, 2])
+                with col_statut:
+                    new_statut = st.selectbox("Modifier le statut", ["Brouillon", "Envoyé", "Accepté", "Refusé", "Facturé"],
+                                              index=["Brouillon", "Envoyé", "Accepté", "Refusé", "Facturé"].index(d["statut"]),
+                                              key=f"stat_dev_{d['id']}")
+                    if st.button("🔄 Valider le statut", key=f"upd_dev_{d['id']}"):
+                        update_devis_statut(d["id"], new_statut)
+                        st.success("Statut du devis mis à jour !")
+                        st.rerun()
+
+                with col_action:
+                    if d["statut"] == "Accepté":
+                        if st.button("➡️ Convertir en Facture", key=f"fac_{d['id']}", type="primary"):
+                            num_fac = create_facture_from_devis(d["id"])
+                            st.success(f"Facture {num_fac} créée avec succès ! Allez dans le module Factures.")
+                            st.rerun()
+                    elif d["statut"] == "Facturé":
+                        st.info("✅ Ce devis a déjà été converti en facture.")
+                    else:
+                        st.warning("Le devis doit être 'Accepté' pour être converti en facture.")
+                        
+                # Bouton PDF
+                if st.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
+                    pdf_bytes = generate_pdf(d, "Devis")
+                    st.download_button("⬇️ Télécharger le PDF", pdf_bytes, f"{d['numero']}.pdf", "application/pdf")
+    else:
+        st.info("Aucun devis enregistré.")
 
 # --- Facture Service ---
 def create_facture_from_devis(devis_id):
