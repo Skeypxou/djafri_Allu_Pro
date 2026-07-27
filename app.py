@@ -8,11 +8,11 @@ import qrcode
 from fpdf import FPDF
 import json
 
-# Importation de notre nouveau moteur de base de données JSON
+# Importation de notre moteur de base de données JSON
 import json_database as db
 
 # ==========================================
-# 1. MOTEUR DE CALCUL (Adapté pour JSON)
+# 1. MOTEUR DE CALCUL
 # ==========================================
 
 def calculer_prix_item(tarifs, largeur, hauteur, qt, materiau, serie, vitrage, couleur_nom, marge):
@@ -23,13 +23,11 @@ def calculer_prix_item(tarifs, largeur, hauteur, qt, materiau, serie, vitrage, c
     
     cout_profil = 0
     if materiau == "Aluminium":
-        # On lit le prix directement depuis le dictionnaire JSON des tarifs
         prix_ml = tarifs['aluminium'].get(serie, 0)
         cout_profil = prix_ml * perimeter
         
     cout_vitrage = tarifs['vitrages'].get(vitrage, 0) * surface
     
-    # Gestion des couleurs (gestion simplifiée pour JSON)
     cout_couleur = 0
     if couleur_nom == "Gris Anthracite":
         cout_couleur = cout_profil * 0.15
@@ -48,10 +46,10 @@ def calculer_prix_item(tarifs, largeur, hauteur, qt, materiau, serie, vitrage, c
     }
 
 # ==========================================
-# 2. GÉNÉRATEUR PDF (Adapté pour Dictionnaires JSON)
+# 2. GÉNÉRATEUR PDF (DEVIS & FACTURES)
 # ==========================================
 
-class DevisPDF(FPDF):
+class DocumentPDF(FPDF):
     def header(self):
         params = self.params
         logo_path = os.path.join("assets", "logo.png")
@@ -69,15 +67,19 @@ class DevisPDF(FPDF):
         self.set_font('Arial', 'I', 8)
         self.cell(0, 10, 'Conditions: 50% à la commande, 50% à la livraison. Validité: 30 jours.', 0, 0, 'C')
 
-def generate_devis_pdf(devis, client, params):
-    pdf = DevisPDF()
+def generate_document_pdf(doc_data, client, params, doc_type="devis"):
+    pdf = DocumentPDF()
     pdf.params = params
     pdf.add_page()
     
+    # Titre du document
+    title = "DEVIS N°" if doc_type == "devis" else "FACTURE N°"
+    numero = doc_data.get('numero', '')
+    
     pdf.set_font('Arial', 'B', 14)
-    pdf.cell(0, 10, f"DEVIS N°: {devis.get('numero', '')}", 0, 1, 'L')
+    pdf.cell(0, 10, f"{title}: {numero}", 0, 1, 'L')
     pdf.set_font('Arial', '', 11)
-    pdf.cell(0, 7, f"Date: {devis.get('date', '')}", 0, 1, 'L')
+    pdf.cell(0, 7, f"Date: {doc_data.get('date', '')}", 0, 1, 'L')
     pdf.ln(5)
     
     pdf.set_fill_color(240, 240, 240)
@@ -86,9 +88,8 @@ def generate_devis_pdf(devis, client, params):
     pdf.cell(95, 8, "Informations:", 1, 1, 'L', 1)
     pdf.set_font('Arial', '', 10)
     pdf.cell(95, 8, f"{client.get('prenom', '')} {client.get('nom', '')}", 1, 0)
-    pdf.cell(95, 8, f"Statut: {devis.get('statut', '')}", 1, 1)
+    pdf.cell(95, 8, f"Statut: {doc_data.get('statut', '')}", 1, 1)
     pdf.cell(95, 8, f"Tel: {client.get('telephone', '')}", 1, 0)
-    pdf.cell(95, 8, f"Commercial: {devis.get('commercial', '')}", 1, 1)
     pdf.multi_cell(190, 8, f"Adresse: {client.get('adresse', '')}, {client.get('wilaya', '')}", 1)
     pdf.ln(5)
     
@@ -100,7 +101,10 @@ def generate_devis_pdf(devis, client, params):
     pdf.ln()
     
     pdf.set_font('Arial', '', 9)
-    for item in devis.get('lignes', []):
+    # Les lignes du devis
+    lignes = doc_data.get('lignes', [])
+    
+    for item in lignes:
         designation = f"{item.get('produit', '')} {item.get('couleur', '')} ({item.get('serie', '')})"
         pdf.cell(widths[0], 8, designation[:35], 1, 0)
         pdf.cell(widths[1], 8, item.get('ouverture', '')[:15], 1, 0)
@@ -112,11 +116,15 @@ def generate_devis_pdf(devis, client, params):
     pdf.ln(5)
     pdf.set_x(110)
     pdf.set_font('Arial', 'B', 10)
-    pdf.cell(50, 8, "Sous Total HT:", 1, 0)
-    pdf.cell(30, 8, f"{devis.get('total_ht', 0):,.2f} DA", 1, 1, 'R')
     
-    if devis.get('tva', False):
-        tva_montant = devis.get('total_ht', 0) * 0.19
+    total_ht = doc_data.get('total_ht', 0)
+    total_ttc = doc_data.get('total_ttc', 0)
+    
+    pdf.cell(50, 8, "Sous Total HT:", 1, 0)
+    pdf.cell(30, 8, f"{total_ht:,.2f} DA", 1, 1, 'R')
+    
+    if doc_data.get('tva', False):
+        tva_montant = total_ht * 0.19
         pdf.set_x(110)
         pdf.cell(50, 8, f"TVA (19%):", 1, 0)
         pdf.cell(30, 8, f"{tva_montant:,.2f} DA", 1, 1, 'R')
@@ -124,11 +132,11 @@ def generate_devis_pdf(devis, client, params):
     pdf.set_x(110)
     pdf.set_font('Arial', 'B', 12)
     pdf.cell(50, 10, "TOTAL TTC:", 1, 0, 'R', True)
-    pdf.cell(30, 10, f"{devis.get('total_ttc', 0):,.2f} DA", 1, 1, 'R', True)
+    pdf.cell(30, 10, f"{total_ttc:,.2f} DA", 1, 1, 'R', True)
     
     # QR Code
     qr = qrcode.QRCode(version=1, box_size=3, border=1)
-    qr.add_data(f"Devis: {devis.get('numero', '')}|Client: {client.get('nom', '')}|Total: {devis.get('total_ttc', 0)}")
+    qr.add_data(f"{title} {numero}|Client: {client.get('nom', '')}|Total: {total_ttc}")
     qr.make(fit=True)
     img = qr.make_image(fill='black', back_color='white')
     
@@ -146,13 +154,11 @@ def generate_devis_pdf(devis, client, params):
 
 def main():
     st.set_page_config(page_title="DJEFF ALUMINIUM PRO", page_icon="🏭", layout="wide")
-    
-    # Initialisation de la base de données JSON
     db.initialize_database()
     
     st.sidebar.title("🏭 DJEFF ALUMINIUM PRO")
     menu = st.sidebar.radio("Navigation", [
-        "🏠 Tableau de bord", "👤 Clients", "📄 Devis", 
+        "🏠 Tableau de bord", "👤 Clients", "📄 Devis", "🧾 Factures",
         "💰 Tarifs", "⚙️ Paramètres", "💾 Sauvegarde"
     ])
     
@@ -162,6 +168,8 @@ def main():
         show_clients()
     elif menu == "📄 Devis":
         show_devis()
+    elif menu == "🧾 Factures":
+        show_factures()
     elif menu == "💰 Tarifs":
         show_tarifs()
     elif menu == "⚙️ Paramètres":
@@ -171,18 +179,17 @@ def main():
 
 def show_dashboard():
     st.header("🏠 Tableau de bord")
-    
-    # Lecture des données depuis JSON
     clients = db.get_all_clients()
     devis = db.get_all_quotes()
+    factures = db.get_all_invoices()
     
     col1, col2, col3, col4 = st.columns(4)
     col1.metric("Total Clients", len(clients))
     col2.metric("Total Devis", len(devis))
-    col3.metric("Devis Acceptés", len([d for d in devis if d.get('statut') == 'Accepté']))
+    col3.metric("Total Factures", len(factures))
     
-    total_ca = sum([d.get('total_ttc', 0) for d in devis if d.get('statut') == 'Accepté'])
-    col4.metric("CA Total (DA)", f"{total_ca:,.0f}")
+    total_ca = sum([f.get('montant', 0) for f in factures])
+    col4.metric("CA Facturé (DA)", f"{total_ca:,.0f}")
     
     st.markdown("---")
     st.subheader("Évolution des Devis")
@@ -214,7 +221,6 @@ def show_clients():
             
             if st.form_submit_button("Enregistrer"):
                 if nom and tel1:
-                    # Sauvegarde dans JSON
                     db.add_client({
                         "nom": nom, "prenom": prenom, "societe": societe, "telephone1": tel1, 
                         "telephone2": tel2, "wilaya": wilaya, "commune": commune, 
@@ -244,7 +250,6 @@ def show_devis():
         st.warning("Veuillez d'abord créer un client avant de faire un devis.")
         return
 
-    # 1. Informations du Devis
     st.subheader("Informations du Devis")
     c1, c2, c3 = st.columns(3)
     with c1:
@@ -259,13 +264,10 @@ def show_devis():
         statut = st.selectbox("Statut", ["Brouillon", "Envoyé", "Accepté", "Refusé"])
 
     st.markdown("---")
-    
-    # 2. Formulaire d'ajout d'article
     st.subheader("Ajouter un produit au panier")
-    tarifs = db.get_tarifs() # Récupère les tarifs depuis JSON
+    tarifs = db.get_tarifs()
     
     with st.form("item_form"):
-        # Listes fixes (ou tu peux les mettre dans tarifs.json plus tard)
         types = ["Fenêtre", "Imposte", "Porte", "Porte-fenêtre", "Baie vitrée", "Portail"]
         ouv = ["Fixe", "1 vantail", "2 vantaux", "3 vantaux", "Coulissante", "Oscillo-battante"]
         series = list(tarifs['aluminium'].keys())
@@ -301,7 +303,6 @@ def show_devis():
             st.success(f"Produit ajouté au panier (Total: {calc['total_ligne']} DA)")
             st.rerun()
 
-    # 3. Affichage du panier et validation
     if st.session_state.cart:
         st.subheader("Articles du Devis")
         df_cart = pd.DataFrame(st.session_state.cart)
@@ -337,7 +338,6 @@ def show_devis():
                     "total_ttc": total_ttc,
                     "lignes": st.session_state.cart
                 }
-                # Sauvegarde du devis dans JSON
                 db.create_quote(quote_data)
                 st.session_state.cart = []
                 st.success("Devis enregistré avec succès !")
@@ -350,21 +350,87 @@ def show_devis():
     params = db.get_entreprise_params()
     
     if devis_list:
-        # On inverse la liste pour afficher les plus récents en premier
         for d in reversed(devis_list):
             client = db.get_client(d['client_id'])
             client_name = f"{client.get('prenom', '')} {client['nom']}" if client else "Client inconnu"
             
             with st.expander(f"{d['numero']} - {client_name} - {d['total_ttc']:,.2f} DA [{d['statut']}]"):
                 st.write(f"**Date:** {d['date']} | **Commercial:** {d['commercial']}")
-                if st.button("📄 Générer PDF", key=f"pdf_{d['id']}"):
-                    pdf_bytes = generate_devis_pdf(d, client, params)
-                    st.download_button(
-                        label="⬇️ Télécharger le PDF",
-                        data=pdf_bytes,
-                        file_name=f"{d['numero']}.pdf",
-                        mime="application/pdf"
-                    )
+                
+                col_pdf, col_fac = st.columns(2)
+                with col_pdf:
+                    if st.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
+                        pdf_bytes = generate_document_pdf(d, client, params, "devis")
+                        st.download_button(
+                            label="⬇️ Télécharger le PDF",
+                            data=pdf_bytes,
+                            file_name=f"{d['numero']}.pdf",
+                            mime="application/pdf"
+                        )
+
+def show_factures():
+    st.header("🧾 Gestion des Factures")
+    
+    st.subheader("Transformer un Devis en Facture")
+    devis_list = db.get_all_quotes()
+    factures_list = db.get_all_invoices()
+    
+    # Liste des IDs de devis qui ont DÉJÀ une facture
+    devis_deja_factures = [f['devis_id'] for f in factures_list]
+    
+    # On ne garde que les devis qui n'ont pas encore été facturés
+    devis_a_facturer = [d for d in devis_list if d['id'] not in devis_deja_factures]
+    
+    if not devis_a_facturer:
+        st.info("Tous les devis ont déjà été facturés ou aucun devis n'existe.")
+    else:
+        col1, col2 = st.columns([3, 1])
+        with col1:
+            devis_opts = {f"{d['numero']} - {db.get_client(d['client_id']).get('nom', 'Inconnu')} ({d['total_ttc']:,.2f} DA)": d['id'] for d in devis_a_facturer}
+            sel_devis = st.selectbox("Choisir un devis à facturer", list(devis_opts.keys()))
+        
+        with col2:
+            st.write("") # Espace vide pour l'alignement
+            st.write("")
+            if st.button("➕ Créer la Facture", type="primary"):
+                devis_id = devis_opts[sel_devis]
+                devis = db.get_quote(devis_id)
+                
+                invoice_data = {
+                    "devis_id": devis_id,
+                    "client_id": devis['client_id'],
+                    "montant": devis.get('total_ttc', 0),
+                    "statut": "Non payée"
+                }
+                db.create_invoice(invoice_data)
+                st.success("Facture générée avec succès à partir du devis !")
+                st.balloons()
+                st.rerun()
+
+    st.markdown("---")
+    st.subheader("📋 Factures Enregistrées")
+    params = db.get_entreprise_params()
+    
+    if factures_list:
+        for f in reversed(factures_list):
+            client = db.get_client(f['client_id'])
+            client_name = f"{client.get('prenom', '')} {client['nom']}" if client else "Client inconnu"
+            devis_source = db.get_quote(f.get('devis_id'))
+            
+            with st.expander(f"{f['numero']} - {client_name} - {f['montant']:,.2f} DA [{f['statut']}]"):
+                st.write(f"**Date:** {f['date']} | **Devis d'origine:** {devis_source.get('numero', 'N/A') if devis_source else 'N/A'}")
+                if st.button("📄 Générer PDF Facture", key=f"pdf_fac_{f['id']}"):
+                    # On réutilise les infos du devis pour générer le PDF de la facture
+                    if devis_source:
+                        pdf_bytes = generate_document_pdf(devis_source, client, params, "facture")
+                        st.download_button(
+                            label="⬇️ Télécharger la Facture PDF",
+                            data=pdf_bytes,
+                            file_name=f"{f['numero']}.pdf",
+                            mime="application/pdf"
+                        )
+                    else:
+                        st.error("Le devis source est introuvable.")
 
 def show_tarifs():
     st.header("💰 Gestion des Tarifs")
