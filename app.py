@@ -12,7 +12,7 @@ import json
 import json_database as db
 
 # ==========================================
-# 1. MOTEUR DE CALCUL
+# 1. MOTEUR DE CALCUL (Adapté pour JSON)
 # ==========================================
 
 def calculer_prix_item(tarifs, largeur, hauteur, qt, materiau, serie, vitrage, couleur_nom, marge):
@@ -23,11 +23,13 @@ def calculer_prix_item(tarifs, largeur, hauteur, qt, materiau, serie, vitrage, c
     
     cout_profil = 0
     if materiau == "Aluminium":
+        # On lit le prix directement depuis le dictionnaire JSON des tarifs
         prix_ml = tarifs['aluminium'].get(serie, 0)
         cout_profil = prix_ml * perimeter
         
     cout_vitrage = tarifs['vitrages'].get(vitrage, 0) * surface
     
+    # Gestion des couleurs (gestion simplifiée pour JSON)
     cout_couleur = 0
     if couleur_nom == "Gris Anthracite":
         cout_couleur = cout_profil * 0.15
@@ -46,7 +48,7 @@ def calculer_prix_item(tarifs, largeur, hauteur, qt, materiau, serie, vitrage, c
     }
 
 # ==========================================
-# 2. GÉNÉRATEUR PDF (DEVIS & FACTURES)
+# 2. GÉNÉRATEUR PDF (Adapté pour Dictionnaires JSON)
 # ==========================================
 
 class DocumentPDF(FPDF):
@@ -101,10 +103,7 @@ def generate_document_pdf(doc_data, client, params, doc_type="devis"):
     pdf.ln()
     
     pdf.set_font('Arial', '', 9)
-    # Les lignes du devis
-    lignes = doc_data.get('lignes', [])
-    
-    for item in lignes:
+    for item in doc_data.get('lignes', []):
         designation = f"{item.get('produit', '')} {item.get('couleur', '')} ({item.get('serie', '')})"
         pdf.cell(widths[0], 8, designation[:35], 1, 0)
         pdf.cell(widths[1], 8, item.get('ouverture', '')[:15], 1, 0)
@@ -154,6 +153,8 @@ def generate_document_pdf(doc_data, client, params, doc_type="devis"):
 
 def main():
     st.set_page_config(page_title="DJEFF ALUMINIUM PRO", page_icon="🏭", layout="wide")
+    
+    # Initialisation de la base de données JSON
     db.initialize_database()
     
     st.sidebar.title("🏭 DJEFF ALUMINIUM PRO")
@@ -179,6 +180,7 @@ def main():
 
 def show_dashboard():
     st.header("🏠 Tableau de bord")
+    
     clients = db.get_all_clients()
     devis = db.get_all_quotes()
     factures = db.get_all_invoices()
@@ -221,6 +223,7 @@ def show_clients():
             
             if st.form_submit_button("Enregistrer"):
                 if nom and tel1:
+                    # Sauvegarde dans JSON
                     db.add_client({
                         "nom": nom, "prenom": prenom, "societe": societe, "telephone1": tel1, 
                         "telephone2": tel2, "wilaya": wilaya, "commune": commune, 
@@ -265,7 +268,7 @@ def show_devis():
 
     st.markdown("---")
     st.subheader("Ajouter un produit au panier")
-    tarifs = db.get_tarifs()
+    tarifs = db.get_tarifs() # Récupère les tarifs depuis JSON
     
     with st.form("item_form"):
         types = ["Fenêtre", "Imposte", "Porte", "Porte-fenêtre", "Baie vitrée", "Portail"]
@@ -356,17 +359,14 @@ def show_devis():
             
             with st.expander(f"{d['numero']} - {client_name} - {d['total_ttc']:,.2f} DA [{d['statut']}]"):
                 st.write(f"**Date:** {d['date']} | **Commercial:** {d['commercial']}")
-                
-                col_pdf, col_fac = st.columns(2)
-                with col_pdf:
-                    if st.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
-                        pdf_bytes = generate_document_pdf(d, client, params, "devis")
-                        st.download_button(
-                            label="⬇️ Télécharger le PDF",
-                            data=pdf_bytes,
-                            file_name=f"{d['numero']}.pdf",
-                            mime="application/pdf"
-                        )
+                if st.button("📄 Générer PDF Devis", key=f"pdf_{d['id']}"):
+                    pdf_bytes = generate_document_pdf(d, client, params, "devis")
+                    st.download_button(
+                        label="⬇️ Télécharger le PDF",
+                        data=pdf_bytes,
+                        file_name=f"{d['numero']}.pdf",
+                        mime="application/pdf"
+                    )
 
 def show_factures():
     st.header("🧾 Gestion des Factures")
